@@ -52,6 +52,9 @@ db = client["activitypub_db"]
 
 BASE_URL = os.getenv("BASE_URL")
 
+if not BASE_URL:
+    raise ValueError("BASE_URL environment variable is not set")
+
 
 @broker.task
 async def deliver_activity_to_follower(activity_dict: dict, follower: str):
