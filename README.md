@@ -1,6 +1,6 @@
-# ActivityPub Server 
+# Solana Tribe
 
-This implementation aims to be fully compliant with the ActivityPub server spec.
+This implementation aims to be a fully compliant ActivityPub server using SHDW Drive as media storage.
 
 https://www.w3.org/TR/activitypub/
 
