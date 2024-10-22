@@ -41,13 +41,23 @@ server_private_key = serialization.load_pem_private_key(
 register("json-ld", Parser, "rdflib_jsonld.parser", "JsonLDParser")
 register("json-ld", Serializer, "rdflib_jsonld.serializer", "JsonLDSerializer")
 
-broker = ListQueueBroker(os.getenv("REDIS_URL")).with_middlewares(
+REDIS_URL = os.getenv("REDIS_URL")
+
+if not REDIS_URL:
+    raise ValueError("REDIS_URL environment variable is not set")
+
+broker = ListQueueBroker(REDIS_URL).with_middlewares(
     SimpleRetryMiddleware(default_retry_count=3),
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+MONGO_URL = os.getenv("MONGO_URL")
+
+if not MONGO_URL:
+    raise ValueError("MONGO_URL environment variable is not set")
+
+client = AsyncIOMotorClient(MONGO_URL)
 db = client["activitypub_db"]
 
 BASE_URL = os.getenv("BASE_URL")
@@ -56,7 +66,7 @@ if not BASE_URL:
     raise ValueError("BASE_URL environment variable is not set")
 
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=20)
 async def deliver_activity_to_follower(activity_dict: dict, follower: str):
     from main import create_signed_headers  # Import here to avoid circular imports
     from httpx import AsyncClient
