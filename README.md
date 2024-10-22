@@ -18,5 +18,5 @@ This is a work in progress...
 
 ### TODO
 * Write full test suite
-* Create CLI program
+* Create CLI program with config file support
 * Deploy to PyPi
