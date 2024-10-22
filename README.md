@@ -2,6 +2,8 @@
 
 This implementation aims to be fully compliant with the ActivityPub server spec.
 
+https://www.w3.org/TR/activitypub/
+
 ## Stack:
 * FastAPI
 * MongoDB
@@ -17,6 +19,7 @@ This implementation aims to be fully compliant with the ActivityPub server spec.
 This is a work in progress...
 
 ### TODO
-* Write full test suite
+* Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model
+* Write full e2e test suite with inline spec comments
 * Create CLI program with config file support
 * Deploy to PyPi
