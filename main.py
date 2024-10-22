@@ -1,11 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Response
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, HttpUrl, EmailStr
 from typing import Optional, List, Dict, Any, Union
 import uvicorn
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 import base64
 import json
@@ -19,6 +19,9 @@ from taskiq_redis import ListQueueBroker
 from taskiq import SimpleRetryMiddleware
 from rdflib import Graph, Namespace
 from rdflib.plugin import register, Parser, Serializer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
 
 load_dotenv()
 
@@ -49,6 +52,16 @@ if not REDIS_URL:
 broker = ListQueueBroker(REDIS_URL).with_middlewares(
     SimpleRetryMiddleware(default_retry_count=3),
 )
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is not set")
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -188,14 +201,42 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
 app.add_middleware(ContentNegotiationMiddleware)
 
 
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    # In a real implementation, you'd validate the token properly
-    if token != "fake-token":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-        )
-    return {"username": "testuser"}
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = await db.users.find_one({"username": username})
+    if user is None:
+        raise credentials_exception
+    return user
 
 
 @app.get("/.well-known/webfinger")
@@ -563,12 +604,14 @@ def create_signed_headers(method: str, url: str, body: dict):
 
 
 @app.post("/users", status_code=201)
-async def create_user(username: str, email: EmailStr):
+async def create_user(username: str, email: EmailStr, password: str):
+    hashed_password = get_password_hash(password)
     private_key, public_key = generate_key_pair()
     public_key_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+
 
     actor = Actor(
         type="Person",
@@ -591,6 +634,11 @@ async def create_user(username: str, email: EmailStr):
     )
 
     await db.actors.insert_one(actor.dict())
+    await db.users.insert_one({
+        "username": username,
+        "email": email,
+        "hashed_password": hashed_password,
+    })
     await db.private_keys.insert_one(
         {
             "username": username,

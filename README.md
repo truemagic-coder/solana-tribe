@@ -12,10 +12,11 @@ This implementation aims to be fully compliant with the ActivityPub server spec.
 * REDIS_URL
 * SERVER_PRIVATE_KEY
 * BASE_URL
+* SECRET_KEY (for JWT)
 
 This is a work in progress...
 
 ### TODO
 * Write full test suite
-* Create CLI program?
-* Deploy to PyPi?
+* Create CLI program
+* Deploy to PyPi
