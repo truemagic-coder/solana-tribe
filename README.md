@@ -11,6 +11,7 @@ This implementation aims to be fully compliant with the ActivityPub server spec.
 * MONGO_URL
 * REDIS_URL
 * SERVER_PRIVATE_KEY
+* BASE_URL
 
 This is a work in progress...
 

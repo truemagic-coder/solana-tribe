@@ -50,7 +50,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
 db = client["activitypub_db"]
 
-BASE_URL = "https://example.com"
+BASE_URL = os.getenv("BASE_URL")
 
 
 @broker.task
