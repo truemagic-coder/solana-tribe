@@ -131,8 +131,8 @@ class Actor(BaseModel):
     liked: HttpUrl
     streams: List[HttpUrl]
     preferredUsername: str
-    name: Optional[str]
-    summary: Optional[str]
+    name: Optional[str] = None
+    summary: Optional[str] = None
     publicKey: PublicKey
     icon: Optional[HttpUrl] = None
     image: Optional[HttpUrl] = None
@@ -161,24 +161,44 @@ class Activity(BaseModel):
         default=["https://www.w3.org/ns/activitystreams"], alias="@context"
     )
     type: str
-    id: Optional[HttpUrl]
+    id: Optional[HttpUrl] = None
     actor: Union[HttpUrl, "Actor"]
-    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
-    target: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
-    result: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
-    origin: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
-    instrument: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
+    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] = None
+    target: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] = None
+    result: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] = None
+    origin: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] = None
+    instrument: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] = None
     to: Optional[List[Union[HttpUrl, "Actor"]]] = []
     bto: Optional[List[Union[HttpUrl, "Actor"]]] = []
     cc: Optional[List[Union[HttpUrl, "Actor"]]] = []
     bcc: Optional[List[Union[HttpUrl, "Actor"]]] = []
     audience: Optional[List[Union[HttpUrl, "Actor"]]] = []
-    published: Optional[datetime]
-    updated: Optional[datetime]
-    source: Optional[Source]
+    published: Optional[datetime] = None
+    updated: Optional[datetime] = None
+    source: Optional[Source] = None
 
 
-# New: Tombstone model
+def activity_to_dict(activity: Activity) -> dict:
+    activity_dict = activity.model_dump(by_alias=True)
+    for key, value in activity_dict.items():
+        activity_dict[key] = process_value(value)
+    return activity_dict
+
+
+def process_value(value):
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    elif isinstance(value, datetime):
+        return value.isoformat()
+    elif isinstance(value, list):
+        return [process_value(item) for item in value]
+    elif isinstance(value, dict):
+        return {k: process_value(v) for k, v in value.items()}
+    elif hasattr(value, "__str__"):  # This will catch HttpUrl and similar types
+        return str(value)
+    return value
+
+
 class Tombstone(BaseModel):
     type: str = "Tombstone"
     id: HttpUrl
@@ -437,7 +457,9 @@ async def post_inbox(username: str, activity: Activity, request: Request):
     existing_activity = db.inboxes.find_one({"username": username, "id": activity.id})
 
     if not existing_activity:
-        db.inboxes.insert_one({**activity.dict(), "username": username})
+        db.inboxes.insert_one(
+            {"activity": activity_to_dict(activity), "username": username}
+        )
         process_activity(activity)
 
     return Response(status_code=202)
@@ -485,8 +507,8 @@ async def post_outbox(
     if current_user["username"] != username:
         raise HTTPException(status_code=403, detail="Forbidden")
     activity.id = activity.id or f"{BASE_URL}/activities/{username}/{id(activity)}"
-    activity.published = datetime.utcnow()
-    db.outboxes.insert_one(activity.model_dump())
+    activity.published = datetime.now(dt.UTC)
+    db.outboxes.insert_one(activity_to_dict(activity))
     # Get followers
     followers = db.followers.find_one({"username": username})
     if followers:
@@ -732,9 +754,9 @@ def handle_delete(activity: Activity):
             tombstone = Tombstone(
                 id=object_id,
                 formerType=existing_object.get("type"),
-                deleted=datetime.utcnow(),
+                deleted=datetime.now(dt.UTC),
             )
-            db.objects.replace_one({"id": object_id}, tombstone.dict())
+            db.objects.replace_one({"id": object_id}, tombstone.model_dump())
         forward_to_followers(activity)
 
 
