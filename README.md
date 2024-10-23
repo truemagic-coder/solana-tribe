@@ -65,7 +65,7 @@ Current Status: Pre-Alpha (WIP)
       * [x] Announce
       * [x] Undo
       * [x] Block
-    * [] Security
+    * [ ] Security
       * [x] Signature validation
       * [ ] Honor recipient blocklist
     * [ ] Recursive resolution of related objects
