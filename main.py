@@ -11,9 +11,8 @@ import base64
 import json
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
-from httpsig import HeaderSigner, verify_headers
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from dotenv import load_dotenv
 from taskiq_redis import ListQueueBroker
 from taskiq import SimpleRetryMiddleware
@@ -25,20 +24,41 @@ from passlib.context import CryptContext
 
 load_dotenv()
 
+def load_key(env_var_name, is_pem=True, is_private=True):
+    key_data = os.getenv(env_var_name)
+    if not is_pem:
+        return key_data
+    if not key_data:
+        raise ValueError(f"{env_var_name} environment variable is not set")
+    
+    # Check if the key_data is a file path
+    if os.path.isfile(key_data):
+        with open(key_data, 'rb') as key_file:
+            key_data = key_file.read()
+    else:
+        key_data = key_data.encode()
+    
+    try:
+        if is_private:
+            return serialization.load_pem_private_key(key_data, password=None)
+        else:
+            return serialization.load_pem_public_key(key_data)
+    except ValueError:
+        # If it's not a PEM, it might be a plain secret key
+        return key_data.decode()
+
 # Define ActivityStreams namespace
 AS = Namespace("https://www.w3.org/ns/activitystreams#")
 
 app = FastAPI()
 
-SERVER_PRIVATE_KEY = os.getenv("SERVER_PRIVATE_KEY")
+SERVER_PRIVATE_KEY = load_key("SERVER_PRIVATE_KEY")
+HS256_SECRET_KEY = load_key("HS256_SECRET_KEY", is_pem=False)
+RS256_PUBLIC_KEY = load_key("RS256_PUBLIC_KEY", is_private=False)
+RS256_PRIVATE_KEY = load_key("RS256_PRIVATE_KEY")
 
-if not SERVER_PRIVATE_KEY:
-    raise ValueError("SERVER_PRIVATE_KEY environment variable is not set")
-
-# Convert the string representation of the key to a proper key object
-server_private_key = serialization.load_pem_private_key(
-    SERVER_PRIVATE_KEY.encode(), password=None
-)
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Register JSON-LD plugin
 register("json-ld", Parser, "rdflib_jsonld.parser", "JsonLDParser")
@@ -52,21 +72,6 @@ if not REDIS_URL:
 broker = ListQueueBroker(REDIS_URL).with_middlewares(
     SimpleRetryMiddleware(default_retry_count=3),
 )
-
-HS256_SECRET_KEY = os.getenv("HS256_SECRET_KEY")
-RS256_PRIVATE_KEY = os.getenv("RS256_PRIVATE_KEY")
-RS256_PUBLIC_KEY = os.getenv("RS256_PUBLIC_KEY")
-
-if not HS256_SECRET_KEY:
-    raise ValueError("HS256_SECRET_KEY environment variable is not set")
-
-if not RS256_PRIVATE_KEY or not RS256_PUBLIC_KEY:
-    raise ValueError(
-        "RS256_PRIVATE_KEY or RS256_PUBLIC_KEY environment variable is not set"
-    )
-
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -554,7 +559,7 @@ async def deliver_activity(activity: Activity):
             inbox = recipient.inbox
         try:
             async with httpx.AsyncClient() as client:
-                headers = await create_signed_headers("POST", inbox, activity.dict())
+                headers = await create_signature("POST", inbox, activity.dict())
                 response = await client.post(
                     str(inbox), json=activity.dict(), headers=headers
                 )
@@ -825,39 +830,44 @@ async def verify_http_signature(request: Request):
     public_key = serialization.load_pem_public_key(public_key_pem.encode())
 
     # Verify the signature
-    try:
-        verify_headers(
-            public_key,
-            headers=dict(request.headers),
-            method=request.method,
-            path=request.url.path,
-            required_headers=["(request-target)", "host", "date", "digest"],
+    if verify_signature(
+        public_key,
+        sig_parts["signature"],
+        request.method,
+        request.url.path,
+        request.headers,
+    ):
+        return
+    else:
+        raise HTTPException(
+            status_code=401, detail=f"Invalid signature: {signature_header}"
         )
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid signature: {str(e)}")
 
 
-def create_signed_headers(method: str, url: str, body: dict):
-    digest = base64.b64encode(
-        hashes.SHA256(json.dumps(body).encode()).digest()
-    ).decode()
+def create_signature(private_key, method, path, headers):
+    signing_string = f"(request-target): {method.lower()} {path}\n"
+    signing_string += "\n".join(f"{k.lower()}: {v}" for k, v in headers.items())
 
-    headers = {
-        "Host": BASE_URL,
-        "Date": datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT"),
-        "Digest": f"SHA-256={digest}",
-        "Content-Type": "application/activity+json",
-    }
-
-    signer = HeaderSigner(
-        key_id=f"{BASE_URL}/actors/server#main-key",
-        private_key=server_private_key,
-        headers=["(request-target)", "host", "date", "digest"],
+    signature = private_key.sign(
+        signing_string.encode(), padding.PKCS1v15(), hashes.SHA256()
     )
+    return base64.b64encode(signature).decode()
 
-    signed_headers = signer.sign(headers, method=method.lower(), path=url)
 
-    return signed_headers
+def verify_signature(public_key, signature, method, path, headers):
+    signing_string = f"(request-target): {method.lower()} {path}\n"
+    signing_string += "\n".join(f"{k.lower()}: {v}" for k, v in headers.items())
+
+    try:
+        public_key.verify(
+            base64.b64decode(signature),
+            signing_string.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
 
 
 @app.post("/users", status_code=201)
