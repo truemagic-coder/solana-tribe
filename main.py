@@ -1,6 +1,7 @@
+import json
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pymongo import MongoClient
 from pydantic import BaseModel, Field, HttpUrl, EmailStr
 from typing import Optional, List, Dict, Any, Union
@@ -15,8 +16,6 @@ import os
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from dotenv import load_dotenv
-from taskiq_redis import ListQueueBroker
-from taskiq import SimpleRetryMiddleware
 from rdflib import Graph, Namespace
 from rdflib.plugin import register, Parser, Serializer
 import jwt
@@ -67,15 +66,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 register("json-ld", Parser, "rdflib_jsonld.parser", "JsonLDParser")
 register("json-ld", Serializer, "rdflib_jsonld.serializer", "JsonLDSerializer")
 
-REDIS_URL = os.getenv("REDIS_URL")
-
-if not REDIS_URL:
-    raise ValueError("REDIS_URL environment variable is not set")
-
-broker = ListQueueBroker(REDIS_URL).with_middlewares(
-    SimpleRetryMiddleware(default_retry_count=3),
-)
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -92,20 +82,6 @@ BASE_URL = os.getenv("BASE_URL")
 
 if not BASE_URL:
     raise ValueError("BASE_URL environment variable is not set")
-
-
-@broker.task(retry_on_error=True, max_retries=20)
-async def deliver_activity_to_follower(activity_dict: dict, follower: str):
-    from main import create_signed_headers  # Import here to avoid circular imports
-    from httpx import AsyncClient
-
-    async with AsyncClient() as client:
-        headers = await create_signed_headers("POST", follower, activity_dict)
-        try:
-            response = await client.post(follower, json=activity_dict, headers=headers)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"Failed to deliver activity to {follower}: {e}")
 
 
 class PublicKey(BaseModel):
@@ -237,14 +213,29 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
             response.headers["Content-Type"] = (
                 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
             )
+
             if isinstance(response, JSONResponse):
                 json_body = response.body
+            elif isinstance(response, StreamingResponse):
+                json_body = b"".join([chunk async for chunk in response.body_iterator])
             else:
-                json_body = await response.body()
+                # For other response types, we might not be able to modify the content
+                return response
+
+            # Ensure json_body is a string
+            if isinstance(json_body, bytes):
+                json_body = json_body.decode("utf-8")
+
+            # Parse JSON
+            try:
+                json_data = json.loads(json_body)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, return the original response
+                return response
 
             # Convert to RDF graph
             g = Graph()
-            g.parse(data=json_body, format="json-ld")
+            g.parse(data=json.dumps(json_data), format="json-ld")
 
             # Define ActivityStreams context
             context = {
@@ -976,8 +967,10 @@ async def shared_inbox(activity: Activity, request: Request):
         )
 
         if not existing_activity:
-            db.inboxes.insert_one({**activity.dict(), "username": username})
-            process_activity(activity)
+            db.inboxes.insert_one(
+                {"activity": activity_to_dict(activity), "username": username}
+            )
+            process_activity(activity.model_dump())
 
     return Response(status_code=202)
 

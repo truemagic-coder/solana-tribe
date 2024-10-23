@@ -1,20 +1,14 @@
-import json
 from pymongo import MongoClient
 import pytest
 from fastapi.testclient import TestClient
 from dotenv import load_dotenv
-from rdflib import Graph
-from rdflib.plugin import register, Parser, Serializer
 import os
 
 load_dotenv(".env.test")
-from main import app, db, create_access_token, create_signature  # noqa: E402
-
-# Register JSON-LD plugin
-register("json-ld", Parser, "rdflib_jsonld.parser", "JsonLDParser")
-register("json-ld", Serializer, "rdflib_jsonld.serializer", "JsonLDSerializer")
+from main import app, create_access_token # noqa: E402
 
 client = TestClient(app)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def clear_database():
@@ -22,6 +16,7 @@ def clear_database():
     # After all tests have run, clear the database
     client = MongoClient(os.getenv("MONGO_URL"))
     client.drop_database("solanatribe")
+
 
 @pytest.fixture
 def auth_headers(test_access_token):
@@ -237,277 +232,109 @@ def test_announce_activity(auth_headers):
     assert response.status_code == 201
 
 
-# # Server-to-Server Interaction Tests
-# def test_inbox_post(monkeypatch):
-#     # Mock the verify_http_signature function to always return True
-#     monkeypatch.setattr("main.verify_http_signature", lambda request: True)
+# Server-to-Server Interaction Tests
+def test_inbox_post(monkeypatch):
+    # Mock the verify_http_signature function to always return True
+    monkeypatch.setattr("main.verify_http_signature", lambda request: True)
 
-#     activity = {
-#         "type": "Create",
-#         "actor": "https://otherserver.com/actors/remoteuser",
-#         "object": {"type": "Note", "content": "This is a remote note"},
-#     }
-#     response = client.post("/actors/testuser/inbox", json=activity)
-#     assert response.status_code == 202
-
-
-# def test_shared_inbox_post(monkeypatch):
-#     # Mock the verify_http_signature function to always return True
-#     monkeypatch.setattr("main.verify_http_signature", lambda request: True)
-
-#     activity = {
-#         "type": "Announce",
-#         "actor": "https://otherserver.com/actors/remoteuser",
-#         "object": "https://example.com/objects/somecontent",
-#     }
-#     response = client.post("/shared_inbox", json=activity)
-#     assert response.status_code == 202
+    activity = {
+        "type": "Create",
+        "actor": "https://otherserver.com/actors/remoteuser",
+        "object": {"type": "Note", "content": "This is a remote note"},
+    }
+    response = client.post("/actors/testuser/inbox", json=activity)
+    assert response.status_code == 202
 
 
-# # Content Negotiation Tests
-# def test_content_negotiation_json_ld():
-#     headers = {"Accept": "application/ld+json"}
-#     response = client.get("/actors/testuser", headers=headers)
-#     assert response.status_code == 200
-#     assert (
-#         response.headers["Content-Type"]
-#         == 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
-#     )
+def test_shared_inbox_post(monkeypatch):
+    # Mock the verify_http_signature function to always return True
+    monkeypatch.setattr("main.verify_http_signature", lambda request: True)
+
+    activity = {
+        "type": "Announce",
+        "actor": "https://otherserver.com/actors/remoteuser",
+        "object": "https://example.com/objects/somecontent",
+    }
+    response = client.post("/shared_inbox", json=activity)
+    assert response.status_code == 202
 
 
-# def test_content_negotiation_activity_json():
-#     headers = {"Accept": "application/activity+json"}
-#     response = client.get("/actors/testuser", headers=headers)
-#     assert response.status_code == 200
-#     assert (
-#         response.headers["Content-Type"]
-#         == 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
-#     )
+# Content Negotiation Tests
+def test_content_negotiation_json_ld():
+    headers = {"Accept": "application/ld+json"}
+    response = client.get("/actors/testuser", headers=headers)
+    assert response.status_code == 200
+    assert (
+        response.headers["Content-Type"]
+        == 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
+    )
 
 
-# # HTTP Signatures Tests
-# def test_create_signed_headers():
-#     headers = create_signature(
-#         "POST", "https://example.com/inbox", {"type": "Create"}
-#     )
-#     assert "Signature" in headers
-#     assert "Date" in headers
-#     assert "Digest" in headers
-
-# # # Pagination Tests
-# # def test_collection_pagination():
-# #     # Add multiple items to a collection
-# #     for i in range(25):  # Assuming 20 items per page
-# #         mock_data["outboxes"]["testuser"] = mock_data["outboxes"].get(
-# #             "testuser", []
-# #         ) + [{"id": f"item{i}"}]
-
-# #     response = client.get("/actors/testuser/outbox")
-# #     assert response.status_code == 200
-# #     assert response.json()["type"] == "OrderedCollection"
-# #     assert "first" in response.json()
-# #     assert "last" in response.json()
-
-# #     # Check first page
-# #     first_page_response = client.get(response.json()["first"])
-# #     assert first_page_response.status_code == 200
-# #     assert first_page_response.json()["type"] == "OrderedCollectionPage"
-# #     assert len(first_page_response.json()["orderedItems"]) == 20
-# #     assert "next" in first_page_response.json()
-
-# #     # Check second page
-# #     second_page_response = client.get(first_page_response.json()["next"])
-# #     assert second_page_response.status_code == 200
-# #     assert second_page_response.json()["type"] == "OrderedCollectionPage"
-# #     assert len(second_page_response.json()["orderedItems"]) == 5
-# #     assert "prev" in second_page_response.json()
+def test_content_negotiation_activity_json():
+    headers = {"Accept": "application/activity+json"}
+    response = client.get("/actors/testuser", headers=headers)
+    assert response.status_code == 200
+    assert (
+        response.headers["Content-Type"]
+        == 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
+    )
 
 
-# # Test federation (if implemented)
-# def test_federation(monkeypatch):
-#     # Mock the send_to_remote_inbox function
-#     monkeypatch.setattr("main.send_to_remote_inbox", lambda activity, inbox_url: True)
-
-#     activity = {
-#         "type": "Create",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": {"type": "Note", "content": "This is a federated note"},
-#         "to": ["https://remoteserver.com/actors/remoteuser"],
-#     }
-#     response = client.post(
-#         "/actors/testuser/outbox", json=activity, headers=auth_headers
-#     )
-#     assert response.status_code == 201
+# Test context handling
+def test_context_handling():
+    response = client.get("/actors/testuser")
+    assert response.status_code == 200
+    assert "@context" in response.json()
+    assert "https://www.w3.org/ns/activitystreams" in response.json()["@context"]
 
 
-# # Test object retrieval
-# def test_get_object():
-#     # First, create an object
-#     create_activity = {
-#         "type": "Create",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": {"type": "Note", "content": "This is a test note for retrieval"},
-#     }
-#     create_response = client.post(
-#         "/actors/testuser/outbox", json=create_activity, headers=auth_headers
-#     )
-#     created_object_id = create_response.json()["object"]["id"]
-
-#     # Now, retrieve the object
-#     response = client.get(f"/objects/{created_object_id.split('/')[-1]}")
-#     assert response.status_code == 200
-#     assert response.json()["type"] == "Note"
-#     assert response.json()["content"] == "This is a test note for retrieval"
+# Test activity validation
+def test_activity_validation():
+    invalid_activity = {
+        "type": "InvalidType",
+        "actor": "https://example.com/actors/testuser",
+        "object": "This is not a valid object",
+    }
+    response = client.post(
+        "/actors/testuser/outbox", json=invalid_activity, headers=auth_headers
+    )
+    assert response.status_code == 400
 
 
-# # Test context handling
-# def test_context_handling():
-#     response = client.get("/actors/testuser")
-#     assert response.status_code == 200
-#     assert "@context" in response.json()
-#     assert "https://www.w3.org/ns/activitystreams" in response.json()["@context"]
+# Test public key retrieval
+def test_public_key_retrieval():
+    response = client.get("/actors/testuser")
+    assert response.status_code == 200
+    assert "publicKey" in response.json()
+    assert "id" in response.json()["publicKey"]
+    assert "owner" in response.json()["publicKey"]
+    assert "publicKeyPem" in response.json()["publicKey"]
 
 
-# # Test security headers
-# def test_security_headers():
-#     response = client.get("/actors/testuser")
-#     assert response.headers.get("X-Frame-Options") == "DENY"
-#     assert response.headers.get("X-Content-Type-Options") == "nosniff"
-#     assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+# Test undo activity
+def test_undo_activity(auth_headers):
+    # First, create a Like activity
+    like_activity = {
+        "type": "Like",
+        "actor": "https://example.com/actors/testuser",
+        "object": "https://example.com/objects/somecontent",
+    }
+    like_response = client.post(
+        "/actors/testuser/outbox", json=like_activity, headers=auth_headers
+    )
+    assert like_response.status_code == 201
+    like_id = like_response.json()["id"]
 
-
-# # Test JSON-LD compaction (if implemented)
-# def test_jsonld_compaction():
-#     response = client.get("/actors/testuser")
-#     assert response.status_code == 200
-
-#     # Create an RDF graph from the response JSON
-#     g = Graph().parse(data=response.text, format="json-ld")
-
-#     # Compact the graph using the ActivityStreams context
-#     context = "https://www.w3.org/ns/activitystreams"
-#     compacted = g.serialize(format="json-ld", context=context, compact=True)
-
-#     # Parse the compacted JSON-LD
-#     compacted_json = json.loads(compacted)
-
-#     # Assertions
-#     assert "@context" in compacted_json
-#     assert compacted_json["@context"] == context
-#     assert "type" in compacted_json
-#     assert "id" in compacted_json
-#     assert "preferredUsername" in compacted_json
-
-
-# # Test activity delivery to followers
-# def test_activity_delivery_to_followers(monkeypatch):
-#     # Mock the send_to_remote_inbox function
-#     monkeypatch.setattr("main.send_to_remote_inbox", lambda activity, inbox_url: True)
-
-#     # Add a follower
-#     # ["followers"]["testuser"] = ["https://remoteserver.com/actors/follower"]
-
-#     activity = {
-#         "type": "Create",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": {"type": "Note", "content": "This is a note for followers"},
-#     }
-#     response = client.post(
-#         "/actors/testuser/outbox", json=activity, headers=auth_headers
-#     )
-#     assert response.status_code == 201
-
-
-# # Test activity validation
-# def test_activity_validation():
-#     invalid_activity = {
-#         "type": "InvalidType",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": "This is not a valid object",
-#     }
-#     response = client.post(
-#         "/actors/testuser/outbox", json=invalid_activity, headers=auth_headers
-#     )
-#     assert response.status_code == 400
-
-
-# # Test public key retrieval
-# def test_public_key_retrieval():
-#     response = client.get("/actors/testuser")
-#     assert response.status_code == 200
-#     assert "publicKey" in response.json()
-#     assert "id" in response.json()["publicKey"]
-#     assert "owner" in response.json()["publicKey"]
-#     assert "publicKeyPem" in response.json()["publicKey"]
-
-
-# # Test actor update
-# def test_actor_update(auth_headers):
-#     update_data = {"name": "Updated Name", "summary": "This is an updated summary"}
-#     response = client.patch("/actors/testuser", json=update_data, headers=auth_headers)
-#     assert response.status_code == 200
-#     assert response.json()["name"] == "Updated Name"
-#     assert response.json()["summary"] == "This is an updated summary"
-
-
-# # Test actor deletion
-# def test_actor_deletion(auth_headers):
-#     response = client.delete("/actors/testuser", headers=auth_headers)
-#     assert response.status_code == 204
-
-#     # Verify that the actor is no longer retrievable
-#     get_response = client.get("/actors/testuser")
-#     assert get_response.status_code == 404
-
-
-# # Test undo activity
-# def test_undo_activity(auth_headers):
-#     # First, create a Like activity
-#     like_activity = {
-#         "type": "Like",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": "https://example.com/objects/somecontent",
-#     }
-#     like_response = client.post(
-#         "/actors/testuser/outbox", json=like_activity, headers=auth_headers
-#     )
-#     assert like_response.status_code == 201
-#     like_id = like_response.json()["id"]
-
-#     # Now, undo the Like activity
-#     undo_activity = {
-#         "type": "Undo",
-#         "actor": "https://example.com/actors/testuser",
-#         "object": like_id,
-#     }
-#     undo_response = client.post(
-#         "/actors/testuser/outbox", json=undo_activity, headers=auth_headers
-#     )
-#     assert undo_response.status_code == 201
-
-
-# # Test blocked actors (if implemented)
-# def test_blocked_actors(auth_headers, monkeypatch):
-#     # Mock the is_blocked function
-#     monkeypatch.setattr(
-#         "main.is_blocked",
-#         lambda actor: actor == "https://example.com/actors/blockeduser",
-#     )
-
-#     blocked_activity = {
-#         "type": "Create",
-#         "actor": "https://example.com/actors/blockeduser",
-#         "object": {"type": "Note", "content": "This should be blocked"},
-#     }
-#     response = client.post("/actors/testuser/inbox", json=blocked_activity)
-#     assert response.status_code == 403
-
-
-# # Test rate limiting for specific endpoints (if implemented)
-# def test_rate_limiting_specific_endpoints():
-#     for _ in range(50):  # Assuming a lower rate limit for the inbox
-#         response = client.post("/actors/testuser/inbox", json={"type": "Create"})
-#     assert response.status_code in [202, 429]  # Either accepted or too many requests
+    # Now, undo the Like activity
+    undo_activity = {
+        "type": "Undo",
+        "actor": "https://example.com/actors/testuser",
+        "object": like_id,
+    }
+    undo_response = client.post(
+        "/actors/testuser/outbox", json=undo_activity, headers=auth_headers
+    )
+    assert undo_response.status_code == 201
 
 
 if __name__ == "__main__":

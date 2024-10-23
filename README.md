@@ -9,7 +9,6 @@ Current Status: Pre-Alpha (WIP)
 ## Stack:
 * FastAPI
 * MongoDB
-* Taskiq (Redis)
 
 ## Env Vars:
 * MONGO_URL
@@ -22,7 +21,7 @@ Current Status: Pre-Alpha (WIP)
 * JWT_ALGORITHM (optional - defaults to HS256)
 
 ### TODO
-* Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model
+* Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model with tests
 * Write full e2e test suite with inline spec comments
 * Update readme with checkmarks for all specs completed/supported
 * Create CLI program with config file support
