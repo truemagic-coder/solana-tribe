@@ -25,20 +25,21 @@ from passlib.context import CryptContext
 
 load_dotenv()
 
+
 def load_key(env_var_name, is_pem=True, is_private=True):
     key_data = os.getenv(env_var_name)
     if not is_pem:
         return key_data
     if not key_data:
         raise ValueError(f"{env_var_name} environment variable is not set")
-    
+
     # Check if the key_data is a file path
     if os.path.isfile(key_data):
-        with open(key_data, 'rb') as key_file:
+        with open(key_data, "rb") as key_file:
             key_data = key_file.read()
     else:
         key_data = key_data.encode()
-    
+
     try:
         if is_private:
             return serialization.load_pem_private_key(key_data, password=None)
@@ -47,6 +48,7 @@ def load_key(env_var_name, is_pem=True, is_private=True):
     except ValueError:
         # If it's not a PEM, it might be a plain secret key
         return key_data.decode()
+
 
 # Define ActivityStreams namespace
 AS = Namespace("https://www.w3.org/ns/activitystreams#")
@@ -148,6 +150,7 @@ def actor_to_dict(actor: Actor) -> dict:
                     value[sub_key] = str(sub_value)
     return actor_dict
 
+
 class Source(BaseModel):
     content: str
     mediaType: str
@@ -160,7 +163,7 @@ class Activity(BaseModel):
     type: str
     id: Optional[HttpUrl]
     actor: Union[HttpUrl, "Actor"]
-    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] 
+    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
     target: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
     result: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
     origin: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
@@ -244,6 +247,7 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(ContentNegotiationMiddleware)
 
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -262,7 +266,9 @@ def authenticate_user(username: str, password: str):
 
 
 def create_access_token(
-    data: dict, expires_delta: Optional[timedelta] = None, algorithm: str = JWT_ALGORITHM
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    algorithm: str = JWT_ALGORITHM,
 ):
     to_encode = data.copy()
     if expires_delta:
@@ -428,9 +434,7 @@ async def post_inbox(username: str, activity: Activity, request: Request):
     verify_http_signature(request)
 
     # De-duplicate activities
-    existing_activity = db.inboxes.find_one(
-        {"username": username, "id": activity.id}
-    )
+    existing_activity = db.inboxes.find_one({"username": username, "id": activity.id})
 
     if not existing_activity:
         db.inboxes.insert_one({**activity.dict(), "username": username})
@@ -439,34 +443,39 @@ async def post_inbox(username: str, activity: Activity, request: Request):
     return Response(status_code=202)
 
 
-@app.get("/actors/{username}/outbox", response_model=OrderedCollection)
-async def get_outbox(username: str):
-    count = db.outboxes.count_documents({"username": username})
-    return OrderedCollection(
-        totalItems=count,
-        first=f"{BASE_URL}/actors/{username}/outbox?page=1",
-        last=f"{BASE_URL}/actors/{username}/outbox?page={(count-1)//20 + 1}",
-    )
-
-
-@app.get("/actors/{username}/outbox", response_model=OrderedCollectionPage)
-async def get_outbox_page(username: str, page: int = 1):
-    items = (
-        db.outboxes.find({"username": username})
-        .skip((page - 1) * 20)
-        .limit(20)
-        .to_list(20)
-    )
+@app.get(
+    "/actors/{username}/outbox",
+    response_model=Union[OrderedCollection, OrderedCollectionPage],
+)
+async def get_outbox(username: str, page: int = None):
     total = db.outboxes.count_documents({"username": username})
-    return OrderedCollectionPage(
-        id=f"{BASE_URL}/actors/{username}/outbox?page={page}",
-        totalItems=total,
-        orderedItems=items,
-        next=f"{BASE_URL}/actors/{username}/outbox?page={page+1}"
-        if page * 20 < total
-        else None,
-        prev=f"{BASE_URL}/actors/{username}/outbox?page={page-1}" if page > 1 else None,
-    )
+
+    if page is None:
+        # Return OrderedCollection when no page is specified
+        return OrderedCollection(
+            totalItems=total,
+            first=f"{BASE_URL}/actors/{username}/outbox?page=1",
+            last=f"{BASE_URL}/actors/{username}/outbox?page={(total-1)//20 + 1}",
+        )
+    else:
+        # Return OrderedCollectionPage when a page is specified
+        items = (
+            db.outboxes.find({"username": username})
+            .skip((page - 1) * 20)
+            .limit(20)
+            .to_list(20)
+        )
+        return OrderedCollectionPage(
+            id=f"{BASE_URL}/actors/{username}/outbox?page={page}",
+            totalItems=total,
+            orderedItems=items,
+            next=f"{BASE_URL}/actors/{username}/outbox?page={page+1}"
+            if page * 20 < total
+            else None,
+            prev=f"{BASE_URL}/actors/{username}/outbox?page={page-1}"
+            if page > 1
+            else None,
+        )
 
 
 @app.post("/actors/{username}/outbox")
@@ -486,68 +495,74 @@ async def post_outbox(
     return JSONResponse(status_code=201, content={"id": activity.id})
 
 
-@app.get("/actors/{username}/followers", response_model=OrderedCollection)
-async def get_followers(username: str):
-    count = db.followers.count_documents({"username": username})
-    return OrderedCollection(
-        totalItems=count,
-        first=f"{BASE_URL}/actors/{username}/followers?page=1",
-        last=f"{BASE_URL}/actors/{username}/followers?page={(count-1)//20 + 1}",
-    )
-
-
-@app.get("/actors/{username}/followers", response_model=OrderedCollectionPage)
-async def get_followers_page(username: str, page: int = 1):
-    items = (
-        db.followers.find({"username": username})
-        .skip((page - 1) * 20)
-        .limit(20)
-        .to_list(20)
-    )
+@app.get(
+    "/actors/{username}/followers",
+    response_model=Union[OrderedCollection, OrderedCollectionPage],
+)
+async def get_followers(username: str, page: int = None):
     total = db.followers.count_documents({"username": username})
-    return OrderedCollectionPage(
-        id=f"{BASE_URL}/actors/{username}/followers?page={page}",
-        totalItems=total,
-        orderedItems=items,
-        next=f"{BASE_URL}/actors/{username}/followers?page={page+1}"
-        if page * 20 < total
-        else None,
-        prev=f"{BASE_URL}/actors/{username}/followers?page={page-1}"
-        if page > 1
-        else None,
-    )
+
+    if page is None:
+        # Return OrderedCollection when no page is specified
+        return OrderedCollection(
+            totalItems=total,
+            first=f"{BASE_URL}/actors/{username}/followers?page=1",
+            last=f"{BASE_URL}/actors/{username}/followers?page={(total-1)//20 + 1}",
+        )
+    else:
+        # Return OrderedCollectionPage when a page is specified
+        items = (
+            db.followers.find({"username": username})
+            .skip((page - 1) * 20)
+            .limit(20)
+            .to_list(20)
+        )
+        return OrderedCollectionPage(
+            id=f"{BASE_URL}/actors/{username}/followers?page={page}",
+            totalItems=total,
+            orderedItems=items,
+            next=f"{BASE_URL}/actors/{username}/followers?page={page+1}"
+            if page * 20 < total
+            else None,
+            prev=f"{BASE_URL}/actors/{username}/followers?page={page-1}"
+            if page > 1
+            else None,
+        )
 
 
-@app.get("/actors/{username}/following", response_model=OrderedCollection)
-async def get_following(username: str):
-    count = db.following.count_documents({"username": username})
-    return OrderedCollection(
-        totalItems=count,
-        first=f"{BASE_URL}/actors/{username}/following?page=1",
-        last=f"{BASE_URL}/actors/{username}/following?page={(count-1)//20 + 1}",
-    )
-
-
-@app.get("/actors/{username}/following", response_model=OrderedCollectionPage)
-async def get_following_page(username: str, page: int = 1):
-    items = (
-        db.following.find({"username": username})
-        .skip((page - 1) * 20)
-        .limit(20)
-        .to_list(20)
-    )
+@app.get(
+    "/actors/{username}/following",
+    response_model=Union[OrderedCollection, OrderedCollectionPage],
+)
+async def get_following(username: str, page: int = None):
     total = db.following.count_documents({"username": username})
-    return OrderedCollectionPage(
-        id=f"{BASE_URL}/actors/{username}/following?page={page}",
-        totalItems=total,
-        orderedItems=items,
-        next=f"{BASE_URL}/actors/{username}/following?page={page+1}"
-        if page * 20 < total
-        else None,
-        prev=f"{BASE_URL}/actors/{username}/following?page={page-1}"
-        if page > 1
-        else None,
-    )
+
+    if page is None:
+        # Return OrderedCollection when no page is specified
+        return OrderedCollection(
+            totalItems=total,
+            first=f"{BASE_URL}/actors/{username}/following?page=1",
+            last=f"{BASE_URL}/actors/{username}/following?page={(total-1)//20 + 1}",
+        )
+    else:
+        # Return OrderedCollectionPage when a page is specified
+        items = (
+            db.following.find({"username": username})
+            .skip((page - 1) * 20)
+            .limit(20)
+            .to_list(20)
+        )
+        return OrderedCollectionPage(
+            id=f"{BASE_URL}/actors/{username}/following?page={page}",
+            totalItems=total,
+            orderedItems=items,
+            next=f"{BASE_URL}/actors/{username}/following?page={page+1}"
+            if page * 20 < total
+            else None,
+            prev=f"{BASE_URL}/actors/{username}/following?page={page-1}"
+            if page > 1
+            else None,
+        )
 
 
 async def deliver_activity(activity: Activity):
@@ -657,9 +672,7 @@ def handle_follow(follow_activity: Activity):
 def handle_unfollow(unfollow_activity: Activity):
     follower = unfollow_activity.actor
     followed = unfollow_activity.object
-    db.followers.update_one(
-        {"username": followed}, {"$pull": {"items": follower}}
-    )
+    db.followers.update_one({"username": followed}, {"$pull": {"items": follower}})
 
 
 def handle_object_activity(activity: Activity):
@@ -787,9 +800,7 @@ def handle_reject(activity: Activity):
     if isinstance(activity.object, dict) and activity.object.get("type") == "Follow":
         follower = activity.object.get("actor")
         followed = activity.actor
-        db.following.update_one(
-            {"username": follower}, {"$pull": {"items": followed}}
-        )
+        db.following.update_one({"username": follower}, {"$pull": {"items": followed}})
 
 
 def forward_to_followers(activity: Activity):
@@ -818,9 +829,7 @@ async def verify_http_signature(request: Request):
 
     # Fetch the public key
     actor_url = key_id.split("#")[0]
-    response = requests.get(
-        actor_url, headers={"Accept": "application/activity+json"}
-    )
+    response = requests.get(actor_url, headers={"Accept": "application/activity+json"})
     actor_data = response.json()
 
     public_key_pem = actor_data.get("publicKey", {}).get("publicKeyPem")
@@ -872,7 +881,6 @@ def verify_signature(public_key, signature, method, path, headers):
 
 @app.post("/users", status_code=201)
 async def create_user(username: str, email: EmailStr, password: str):
-
     if db.users.find_one({"username": username}):
         raise HTTPException(status_code=400, detail="Username already exists")
 
@@ -952,34 +960,39 @@ async def shared_inbox(activity: Activity, request: Request):
     return Response(status_code=202)
 
 
-@app.get("/actors/{username}/liked", response_model=OrderedCollection)
-async def get_liked(username: str):
-    count = db.liked.count_documents({"username": username})
-    return OrderedCollection(
-        totalItems=count,
-        first=f"{BASE_URL}/actors/{username}/liked?page=1",
-        last=f"{BASE_URL}/actors/{username}/liked?page={(count-1)//20 + 1}",
-    )
-
-
-@app.get("/actors/{username}/liked", response_model=OrderedCollectionPage)
-async def get_liked_page(username: str, page: int = 1):
-    items = (
-        db.liked.find({"username": username})
-        .skip((page - 1) * 20)
-        .limit(20)
-        .to_list(20)
-    )
+@app.get(
+    "/actors/{username}/liked",
+    response_model=Union[OrderedCollection, OrderedCollectionPage],
+)
+async def get_liked(username: str, page: int = None):
     total = db.liked.count_documents({"username": username})
-    return OrderedCollectionPage(
-        id=f"{BASE_URL}/actors/{username}/liked?page={page}",
-        totalItems=total,
-        orderedItems=items,
-        next=f"{BASE_URL}/actors/{username}/liked?page={page+1}"
-        if page * 20 < total
-        else None,
-        prev=f"{BASE_URL}/actors/{username}/liked?page={page-1}" if page > 1 else None,
-    )
+
+    if page is None:
+        # Return OrderedCollection when no page is specified
+        return OrderedCollection(
+            totalItems=total,
+            first=f"{BASE_URL}/actors/{username}/liked?page=1",
+            last=f"{BASE_URL}/actors/{username}/liked?page={(total-1)//20 + 1}",
+        )
+    else:
+        # Return OrderedCollectionPage when a page is specified
+        items = (
+            db.liked.find({"username": username})
+            .skip((page - 1) * 20)
+            .limit(20)
+            .to_list(20)
+        )
+        return OrderedCollectionPage(
+            id=f"{BASE_URL}/actors/{username}/liked?page={page}",
+            totalItems=total,
+            orderedItems=items,
+            next=f"{BASE_URL}/actors/{username}/liked?page={page+1}"
+            if page * 20 < total
+            else None,
+            prev=f"{BASE_URL}/actors/{username}/liked?page={page-1}"
+            if page > 1
+            else None,
+        )
 
 
 if __name__ == "__main__":
