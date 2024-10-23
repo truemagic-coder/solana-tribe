@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Response
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, HttpUrl, EmailStr
@@ -53,12 +53,19 @@ broker = ListQueueBroker(REDIS_URL).with_middlewares(
     SimpleRetryMiddleware(default_retry_count=3),
 )
 
-SECRET_KEY = os.getenv("SECRET_KEY")
+HS256_SECRET_KEY = os.getenv("HS256_SECRET_KEY")
+RS256_PRIVATE_KEY = os.getenv("RS256_PRIVATE_KEY")
+RS256_PUBLIC_KEY = os.getenv("RS256_PUBLIC_KEY")
 
-if not SECRET_KEY:
-    raise ValueError("SECRET_KEY environment variable is not set")
+if not HS256_SECRET_KEY:
+    raise ValueError("HS256_SECRET_KEY environment variable is not set")
 
-ALGORITHM = "HS256"
+if not RS256_PRIVATE_KEY or not RS256_PUBLIC_KEY:
+    raise ValueError(
+        "RS256_PRIVATE_KEY or RS256_PUBLIC_KEY environment variable is not set"
+    )
+
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -238,15 +245,34 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+async def authenticate_user(username: str, password: str):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        return False
+    if not verify_password(password, user["hashed_password"]):
+        return False
+    return user
+
+
+def create_access_token(
+    data: dict, expires_delta: Optional[timedelta] = None, algorithm: str = ALGORITHM
+):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+
+    if algorithm == "HS256":
+        return jwt.encode(to_encode, HS256_SECRET_KEY, algorithm=algorithm)
+    elif algorithm == "RS256":
+        private_key = serialization.load_pem_private_key(
+            RS256_PRIVATE_KEY.encode(), password=None
+        )
+        return jwt.encode(to_encode, private_key, algorithm=algorithm)
+    else:
+        raise ValueError("Unsupported algorithm")
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
@@ -256,7 +282,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # Try HS256 first
+        try:
+            payload = jwt.decode(token, HS256_SECRET_KEY, algorithms=["HS256"])
+        except jwt.InvalidTokenError:
+            # If HS256 fails, try RS256
+            public_key = serialization.load_pem_public_key(RS256_PUBLIC_KEY.encode())
+            payload = jwt.decode(token, public_key, algorithms=["RS256"])
+
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
@@ -266,6 +299,26 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     if user is None:
         raise credentials_exception
     return user
+
+
+@app.post("/token")
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), algorithm: str = ALGORITHM
+):
+    user = await authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user["username"]},
+        expires_delta=access_token_expires,
+        algorithm=algorithm,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 # New: Implement shares collection
