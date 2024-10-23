@@ -21,5 +21,6 @@ This is a work in progress...
 ### TODO
 * Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model
 * Write full e2e test suite with inline spec comments
+* Update readme with checkmarks for all specs completed/supported
 * Create CLI program with config file support
 * Deploy to PyPi
