@@ -57,7 +57,7 @@ HS256_SECRET_KEY = load_key("HS256_SECRET_KEY", is_pem=False)
 RS256_PUBLIC_KEY = load_key("RS256_PUBLIC_KEY", is_private=False)
 RS256_PRIVATE_KEY = load_key("RS256_PRIVATE_KEY")
 
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Register JSON-LD plugin
@@ -260,7 +260,7 @@ async def authenticate_user(username: str, password: str):
 
 
 def create_access_token(
-    data: dict, expires_delta: Optional[timedelta] = None, algorithm: str = ALGORITHM
+    data: dict, expires_delta: Optional[timedelta] = None, algorithm: str = JWT_ALGORITHM
 ):
     to_encode = data.copy()
     if expires_delta:
@@ -308,7 +308,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 @app.post("/token")
 async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(), algorithm: str = ALGORITHM
+    form_data: OAuth2PasswordRequestForm = Depends(), algorithm: str = JWT_ALGORITHM
 ):
     user = await authenticate_user(form_data.username, form_data.password)
     if not user:

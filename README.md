@@ -16,7 +16,10 @@ Current Status: Pre-Alpha (WIP)
 * REDIS_URL
 * SERVER_PRIVATE_KEY
 * BASE_URL
-* HS256_SECRET_KEY or RS256_PRIVATE_KEY or RS256_PUBLIC_KEY
+* HS256_SECRET_KEY
+* RS256_PRIVATE_KEY
+* RS256_PUBLIC_KEY
+* JWT_ALGORITHM (optional - defaults to HS256)
 
 ### TODO
 * Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model
