@@ -80,7 +80,7 @@ Current Status: Pre-Alpha (WIP)
     * [x] Redelivery attempts
 * [ ] Client-to-server
   * [x] Outbox POST
-    * [x] Auto-Create for bare objects
+    * [ ] Auto-Create for bare objects
     * [x] Activity side-effects
       * [x] Create
       * [x] Update
