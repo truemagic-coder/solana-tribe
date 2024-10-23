@@ -1,14 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
 from pydantic import BaseModel, Field, HttpUrl, EmailStr
 from typing import Optional, List, Dict, Any, Union
+from pydantic_core import Url
 import uvicorn
+import datetime as dt
 from datetime import datetime, timedelta
-import httpx
+import requests
 import base64
-import json
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
 from cryptography.hazmat.primitives import hashes, serialization
@@ -82,8 +83,8 @@ MONGO_URL = os.getenv("MONGO_URL")
 if not MONGO_URL:
     raise ValueError("MONGO_URL environment variable is not set")
 
-client = AsyncIOMotorClient(MONGO_URL)
-db = client["activitypub_db"]
+client = MongoClient(MONGO_URL)
+db = client["solanatribe"]
 
 BASE_URL = os.getenv("BASE_URL")
 
@@ -131,10 +132,21 @@ class Actor(BaseModel):
     name: Optional[str]
     summary: Optional[str]
     publicKey: PublicKey
-    icon: Optional[HttpUrl]
-    image: Optional[HttpUrl]
+    icon: Optional[HttpUrl] = None
+    image: Optional[HttpUrl] = None
     endpoints: Dict[str, HttpUrl]
 
+
+def actor_to_dict(actor: Actor) -> dict:
+    actor_dict = actor.model_dump()
+    for key, value in actor_dict.items():
+        if isinstance(value, Url):
+            actor_dict[key] = str(value)
+        elif isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, Url):
+                    value[sub_key] = str(sub_value)
+    return actor_dict
 
 class Source(BaseModel):
     content: str
@@ -148,7 +160,7 @@ class Activity(BaseModel):
     type: str
     id: Optional[HttpUrl]
     actor: Union[HttpUrl, "Actor"]
-    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
+    object: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]] 
     target: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
     result: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
     origin: Optional[Union[Dict[str, Any], HttpUrl, "Activity"]]
@@ -202,12 +214,14 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
             response.headers["Content-Type"] = (
                 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
             )
-            body = await response.body()
-            json_body = json.loads(body)
+            if isinstance(response, JSONResponse):
+                json_body = response.body
+            else:
+                json_body = await response.body()
 
             # Convert to RDF graph
             g = Graph()
-            g.parse(data=json.dumps(json_body), format="json-ld")
+            g.parse(data=json_body, format="json-ld")
 
             # Define ActivityStreams context
             context = {
@@ -230,18 +244,6 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(ContentNegotiationMiddleware)
 
-
-# Error handling for unsupported methods
-@app.api_route(
-    "/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"],
-)
-async def catch_all(request: Request, path: str):
-    if request.method not in ["GET", "POST"]:
-        raise HTTPException(status_code=405, detail="Method Not Allowed")
-    raise HTTPException(status_code=404, detail="Not Found")
-
-
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -250,8 +252,8 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-async def authenticate_user(username: str, password: str):
-    user = await db.users.find_one({"username": username})
+def authenticate_user(username: str, password: str):
+    user = db.users.find_one({"username": username})
     if not user:
         return False
     if not verify_password(password, user["hashed_password"]):
@@ -264,13 +266,13 @@ def create_access_token(
 ):
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(dt.UTC) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.now(dt.UTC) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
 
     if algorithm == "HS256":
-        return jwt.encode(to_encode, HS256_SECRET_KEY, algorithm=algorithm)
+        return jwt.encode(to_encode, str(HS256_SECRET_KEY), algorithm=algorithm)
     elif algorithm == "RS256":
         private_key = serialization.load_pem_private_key(
             RS256_PRIVATE_KEY.encode(), password=None
@@ -280,7 +282,7 @@ def create_access_token(
         raise ValueError("Unsupported algorithm")
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -289,7 +291,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         # Try HS256 first
         try:
-            payload = jwt.decode(token, HS256_SECRET_KEY, algorithms=["HS256"])
+            payload = jwt.decode(token, str(HS256_SECRET_KEY), algorithms=["HS256"])
         except jwt.InvalidTokenError:
             # If HS256 fails, try RS256
             public_key = serialization.load_pem_public_key(RS256_PUBLIC_KEY.encode())
@@ -300,7 +302,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             raise credentials_exception
     except jwt.PyJWTError:
         raise credentials_exception
-    user = await db.users.find_one({"username": username})
+    user = db.users.find_one({"username": username})
     if user is None:
         raise credentials_exception
     return user
@@ -310,7 +312,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(), algorithm: str = JWT_ALGORITHM
 ):
-    user = await authenticate_user(form_data.username, form_data.password)
+    user = authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -329,7 +331,7 @@ async def login_for_access_token(
 # New: Implement shares collection
 @app.get("/objects/{object_id}/shares", response_model=OrderedCollection)
 async def get_shares(object_id: str):
-    count = await db.shares.count_documents({"object": object_id})
+    count = db.shares.count_documents({"object": object_id})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/objects/{object_id}/shares?page=1",
@@ -340,12 +342,12 @@ async def get_shares(object_id: str):
 @app.get("/objects/{object_id}/shares", response_model=OrderedCollectionPage)
 async def get_shares_page(object_id: str, page: int = 1):
     items = (
-        await db.shares.find({"object": object_id})
+        db.shares.find({"object": object_id})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.shares.count_documents({"object": object_id})
+    total = db.shares.count_documents({"object": object_id})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/objects/{object_id}/shares?page={page}",
         totalItems=total,
@@ -362,7 +364,7 @@ async def get_shares_page(object_id: str, page: int = 1):
 @app.get("/.well-known/webfinger")
 async def webfinger(resource: str):
     username = resource.split("acct:")[1].split("@")[0]
-    actor = await db.actors.find_one({"preferredUsername": username})
+    actor = db.actors.find_one({"preferredUsername": username})
     if not actor:
         raise HTTPException(status_code=404, detail="User not found")
     return {
@@ -379,7 +381,7 @@ async def webfinger(resource: str):
 
 @app.get("/actors/{username}", response_model=Actor)
 async def get_actor(username: str):
-    actor = await db.actors.find_one({"preferredUsername": username})
+    actor = db.actors.find_one({"preferredUsername": username})
     if actor:
         return Actor(**actor)
     raise HTTPException(status_code=404, detail="Actor not found")
@@ -389,7 +391,7 @@ async def get_actor(username: str):
 async def get_inbox(username: str, current_user: dict = Depends(get_current_user)):
     if current_user["username"] != username:
         raise HTTPException(status_code=403, detail="Forbidden")
-    count = await db.inboxes.count_documents({"username": username})
+    count = db.inboxes.count_documents({"username": username})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/actors/{username}/inbox?page=1",
@@ -404,12 +406,12 @@ async def get_inbox_page(
     if current_user["username"] != username:
         raise HTTPException(status_code=403, detail="Forbidden")
     items = (
-        await db.inboxes.find({"username": username})
+        db.inboxes.find({"username": username})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.inboxes.count_documents({"username": username})
+    total = db.inboxes.count_documents({"username": username})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/actors/{username}/inbox?page={page}",
         totalItems=total,
@@ -426,20 +428,20 @@ async def post_inbox(username: str, activity: Activity, request: Request):
     verify_http_signature(request)
 
     # De-duplicate activities
-    existing_activity = await db.inboxes.find_one(
+    existing_activity = db.inboxes.find_one(
         {"username": username, "id": activity.id}
     )
 
     if not existing_activity:
-        await db.inboxes.insert_one({**activity.dict(), "username": username})
-        await process_activity(activity)
+        db.inboxes.insert_one({**activity.dict(), "username": username})
+        process_activity(activity)
 
     return Response(status_code=202)
 
 
 @app.get("/actors/{username}/outbox", response_model=OrderedCollection)
 async def get_outbox(username: str):
-    count = await db.outboxes.count_documents({"username": username})
+    count = db.outboxes.count_documents({"username": username})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/actors/{username}/outbox?page=1",
@@ -450,12 +452,12 @@ async def get_outbox(username: str):
 @app.get("/actors/{username}/outbox", response_model=OrderedCollectionPage)
 async def get_outbox_page(username: str, page: int = 1):
     items = (
-        await db.outboxes.find({"username": username})
+        db.outboxes.find({"username": username})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.outboxes.count_documents({"username": username})
+    total = db.outboxes.count_documents({"username": username})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/actors/{username}/outbox?page={page}",
         totalItems=total,
@@ -475,18 +477,18 @@ async def post_outbox(
         raise HTTPException(status_code=403, detail="Forbidden")
     activity.id = activity.id or f"{BASE_URL}/activities/{username}/{id(activity)}"
     activity.published = datetime.utcnow()
-    await db.outboxes.insert_one(activity.dict())
+    db.outboxes.insert_one(activity.model_dump())
     # Get followers
-    followers = await db.followers.find_one({"username": username})
+    followers = db.followers.find_one({"username": username})
     if followers:
-        await forward_to_followers(activity.dict(), followers.get("items", []))
+        forward_to_followers(activity.model_dump(), followers.get("items", []))
 
     return JSONResponse(status_code=201, content={"id": activity.id})
 
 
 @app.get("/actors/{username}/followers", response_model=OrderedCollection)
 async def get_followers(username: str):
-    count = await db.followers.count_documents({"username": username})
+    count = db.followers.count_documents({"username": username})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/actors/{username}/followers?page=1",
@@ -497,12 +499,12 @@ async def get_followers(username: str):
 @app.get("/actors/{username}/followers", response_model=OrderedCollectionPage)
 async def get_followers_page(username: str, page: int = 1):
     items = (
-        await db.followers.find({"username": username})
+        db.followers.find({"username": username})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.followers.count_documents({"username": username})
+    total = db.followers.count_documents({"username": username})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/actors/{username}/followers?page={page}",
         totalItems=total,
@@ -518,7 +520,7 @@ async def get_followers_page(username: str, page: int = 1):
 
 @app.get("/actors/{username}/following", response_model=OrderedCollection)
 async def get_following(username: str):
-    count = await db.following.count_documents({"username": username})
+    count = db.following.count_documents({"username": username})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/actors/{username}/following?page=1",
@@ -529,12 +531,12 @@ async def get_following(username: str):
 @app.get("/actors/{username}/following", response_model=OrderedCollectionPage)
 async def get_following_page(username: str, page: int = 1):
     items = (
-        await db.following.find({"username": username})
+        db.following.find({"username": username})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.following.count_documents({"username": username})
+    total = db.following.count_documents({"username": username})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/actors/{username}/following?page={page}",
         totalItems=total,
@@ -558,137 +560,136 @@ async def deliver_activity(activity: Activity):
         else:
             inbox = recipient.inbox
         try:
-            async with httpx.AsyncClient() as client:
-                headers = await create_signature("POST", inbox, activity.dict())
-                response = await client.post(
-                    str(inbox), json=activity.dict(), headers=headers
-                )
-                response.raise_for_status()
-        except httpx.HTTPError as e:
+            headers = create_signature("POST", inbox, activity.model_dump())
+            response = requests.post(
+                str(inbox), json=activity.model_dump(), headers=headers
+            )
+            response.raise_for_status()
+        except requests.HTTPError as e:
             print(f"Failed to deliver activity to {inbox}: {e}")
 
 
 async def process_activity(activity: Activity):
     if activity.type == "Create":
-        await handle_create(activity)
+        handle_create(activity)
     elif activity.type == "Update":
-        await handle_update(activity)
+        handle_update(activity)
     elif activity.type == "Delete":
-        await handle_delete(activity)
+        handle_delete(activity)
     elif activity.type == "Follow":
-        await handle_follow(activity)
+        handle_follow(activity)
     elif activity.type == "Accept":
-        await handle_accept(activity)
+        handle_accept(activity)
     elif activity.type == "Reject":
-        await handle_reject(activity)
+        handle_reject(activity)
     elif activity.type == "Add":
-        await handle_add(activity)
+        handle_add(activity)
     elif activity.type == "Remove":
-        await handle_remove(activity)
+        handle_remove(activity)
     elif activity.type == "Like":
-        await handle_like(activity)
+        handle_like(activity)
     elif activity.type == "Announce":
-        await handle_announce(activity)
+        handle_announce(activity)
     elif activity.type == "Undo":
-        await handle_undo(activity)
+        handle_undo(activity)
     elif activity.type == "Block":
-        await handle_block(activity)
+        handle_block(activity)
 
 
-async def handle_add(activity: Activity):
+def handle_add(activity: Activity):
     if isinstance(activity.object, dict) and isinstance(activity.target, str):
         object_id = activity.object.get("id")
         target_collection = activity.target
 
         # Check if the target collection exists and is owned by the actor
-        collection = await db.collections.find_one(
+        collection = db.collections.find_one(
             {"id": target_collection, "owner": activity.actor}
         )
 
         if collection:
             # Add the object to the collection
-            await db.collections.update_one(
+            db.collections.update_one(
                 {"id": target_collection}, {"$addToSet": {"items": object_id}}
             )
 
             # If the collection is an OrderedCollection, we might want to maintain order
             if collection.get("type") == "OrderedCollection":
-                await db.collections.update_one(
+                db.collections.update_one(
                     {"id": target_collection}, {"$push": {"orderedItems": object_id}}
                 )
 
 
-async def handle_remove(activity: Activity):
+def handle_remove(activity: Activity):
     if isinstance(activity.object, dict) and isinstance(activity.target, str):
         object_id = activity.object.get("id")
         target_collection = activity.target
 
         # Check if the target collection exists and is owned by the actor
-        collection = await db.collections.find_one(
+        collection = db.collections.find_one(
             {"id": target_collection, "owner": activity.actor}
         )
 
         if collection:
             # Remove the object from the collection
-            await db.collections.update_one(
+            db.collections.update_one(
                 {"id": target_collection}, {"$pull": {"items": object_id}}
             )
 
             # If the collection is an OrderedCollection, remove from orderedItems as well
             if collection.get("type") == "OrderedCollection":
-                await db.collections.update_one(
+                db.collections.update_one(
                     {"id": target_collection}, {"$pull": {"orderedItems": object_id}}
                 )
 
 
-async def handle_follow(follow_activity: Activity):
+def handle_follow(follow_activity: Activity):
     follower = follow_activity.actor
     followed = follow_activity.object
-    await db.followers.update_one(
+    db.followers.update_one(
         {"username": followed}, {"$addToSet": {"items": follower}}, upsert=True
     )
     accept_activity = Activity(
         type="Accept", actor=followed, object=follow_activity.dict(), to=[follower]
     )
-    await deliver_activity(accept_activity)
+    deliver_activity(accept_activity)
 
 
-async def handle_unfollow(unfollow_activity: Activity):
+def handle_unfollow(unfollow_activity: Activity):
     follower = unfollow_activity.actor
     followed = unfollow_activity.object
-    await db.followers.update_one(
+    db.followers.update_one(
         {"username": followed}, {"$pull": {"items": follower}}
     )
 
 
-async def handle_object_activity(activity: Activity):
+def handle_object_activity(activity: Activity):
     if activity.type == "Create":
-        await handle_create(activity)
+        handle_create(activity)
     elif activity.type == "Update":
-        await handle_update(activity)
+        handle_update(activity)
     elif activity.type == "Delete":
-        await handle_delete(activity)
+        handle_delete(activity)
     elif activity.type == "Like":
-        await handle_like(activity)
+        handle_like(activity)
     elif activity.type == "Announce":
-        await handle_announce(activity)
+        handle_announce(activity)
 
 
-async def handle_create(activity: Activity):
+def handle_create(activity: Activity):
     object_data = activity.object
     if isinstance(object_data, dict):
         object_id = object_data.get("id") or f"{BASE_URL}/objects/{id(object_data)}"
         object_data["id"] = object_id
-        await db.objects.insert_one(object_data)
-    await forward_to_followers(activity)
+        db.objects.insert_one(object_data)
+    forward_to_followers(activity)
 
 
-async def handle_update(activity: Activity):
+def handle_update(activity: Activity):
     object_data = activity.object
     if isinstance(object_data, dict):
         object_id = object_data.get("id")
         if object_id:
-            existing_object = await db.objects.find_one({"id": object_id})
+            existing_object = db.objects.find_one({"id": object_id})
             if existing_object:
                 # Perform partial update
                 for key, value in object_data.items():
@@ -696,111 +697,111 @@ async def handle_update(activity: Activity):
                         existing_object.pop(key, None)
                     else:
                         existing_object[key] = value
-                await db.objects.replace_one({"id": object_id}, existing_object)
-    await forward_to_followers(activity)
+                db.objects.replace_one({"id": object_id}, existing_object)
+        forward_to_followers(activity)
 
 
-async def handle_block(activity: Activity):
+def handle_block(activity: Activity):
     blocked_actor = activity.object
     if isinstance(blocked_actor, str):
-        await db.blocked.update_one(
+        db.blocked.update_one(
             {"username": activity.actor},
             {"$addToSet": {"items": blocked_actor}},
             upsert=True,
         )
 
 
-async def handle_delete(activity: Activity):
+def handle_delete(activity: Activity):
     object_id = activity.object
     if isinstance(object_id, str):
-        existing_object = await db.objects.find_one({"id": object_id})
+        existing_object = db.objects.find_one({"id": object_id})
         if existing_object:
             tombstone = Tombstone(
                 id=object_id,
                 formerType=existing_object.get("type"),
                 deleted=datetime.utcnow(),
             )
-            await db.objects.replace_one({"id": object_id}, tombstone.dict())
-    await forward_to_followers(activity)
+            db.objects.replace_one({"id": object_id}, tombstone.dict())
+        forward_to_followers(activity)
 
 
-async def handle_like(activity: Activity):
+def handle_like(activity: Activity):
     liked_object = activity.object
     if isinstance(liked_object, str):
-        await db.liked.update_one(
+        db.liked.update_one(
             {"username": activity.actor},
             {"$addToSet": {"items": liked_object}},
             upsert=True,
         )
-    await forward_to_followers(activity)
+        forward_to_followers(activity)
 
 
-async def handle_announce(activity: Activity):
+def handle_announce(activity: Activity):
     announced_object = activity.object
     if isinstance(announced_object, str):
-        await db.announced.update_one(
+        db.announced.update_one(
             {"username": activity.actor},
             {"$addToSet": {"items": announced_object}},
             upsert=True,
         )
-    await forward_to_followers(activity)
+        forward_to_followers(activity)
 
 
-async def handle_undo(activity: Activity):
+def handle_undo(activity: Activity):
     if isinstance(activity.object, dict):
         undone_activity_type = activity.object.get("type")
         if undone_activity_type == "Follow":
-            await handle_unfollow(activity)
+            handle_unfollow(activity)
         elif undone_activity_type == "Like":
-            await undo_like(activity)
+            undo_like(activity)
         elif undone_activity_type == "Announce":
-            await undo_announce(activity)
+            undo_announce(activity)
 
 
-async def undo_like(activity: Activity):
+def undo_like(activity: Activity):
     liked_object = activity.object.get("object")
     if isinstance(liked_object, str):
-        await db.liked.update_one(
+        db.liked.update_one(
             {"username": activity.actor}, {"$pull": {"items": liked_object}}
         )
 
 
-async def undo_announce(activity: Activity):
+def undo_announce(activity: Activity):
     announced_object = activity.object.get("object")
     if isinstance(announced_object, str):
-        await db.announced.update_one(
+        db.announced.update_one(
             {"username": activity.actor}, {"$pull": {"items": announced_object}}
         )
 
 
-async def handle_accept(activity: Activity):
+def handle_accept(activity: Activity):
     if isinstance(activity.object, dict) and activity.object.get("type") == "Follow":
         follower = activity.object.get("actor")
         followed = activity.actor
-        await db.following.update_one(
+        db.following.update_one(
             {"username": follower}, {"$addToSet": {"items": followed}}, upsert=True
         )
 
 
-async def handle_reject(activity: Activity):
+def handle_reject(activity: Activity):
     if isinstance(activity.object, dict) and activity.object.get("type") == "Follow":
         follower = activity.object.get("actor")
         followed = activity.actor
-        await db.following.update_one(
+        db.following.update_one(
             {"username": follower}, {"$pull": {"items": followed}}
         )
 
 
-async def forward_to_followers(activity: Activity):
+def forward_to_followers(activity: Activity):
     actor_username = (
         activity.actor.split("/")[-1]
         if isinstance(activity.actor, str)
         else activity.actor.preferredUsername
     )
-    followers = await db.followers.find_one({"username": actor_username})
+    followers = db.followers.find_one({"username": actor_username})
     if followers:
         for follower in followers.get("items", []):
-            await deliver_activity(activity, [follower])
+            deliver_activity(activity, [follower])
 
 
 async def verify_http_signature(request: Request):
@@ -817,11 +818,10 @@ async def verify_http_signature(request: Request):
 
     # Fetch the public key
     actor_url = key_id.split("#")[0]
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            actor_url, headers={"Accept": "application/activity+json"}
-        )
-        actor_data = response.json()
+    response = requests.get(
+        actor_url, headers={"Accept": "application/activity+json"}
+    )
+    actor_data = response.json()
 
     public_key_pem = actor_data.get("publicKey", {}).get("publicKeyPem")
     if not public_key_pem:
@@ -872,6 +872,10 @@ def verify_signature(public_key, signature, method, path, headers):
 
 @app.post("/users", status_code=201)
 async def create_user(username: str, email: EmailStr, password: str):
+
+    if db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username already exists")
+
     hashed_password = get_password_hash(password)
     private_key, public_key = generate_key_pair()
     public_key_pem = public_key.public_bytes(
@@ -899,15 +903,15 @@ async def create_user(username: str, email: EmailStr, password: str):
         endpoints={"sharedInbox": f"{BASE_URL}/shared_inbox"},
     )
 
-    await db.actors.insert_one(actor.dict())
-    await db.users.insert_one(
+    db.actors.insert_one(actor_to_dict(actor))
+    db.users.insert_one(
         {
             "username": username,
             "email": email,
             "hashed_password": hashed_password,
         }
     )
-    await db.private_keys.insert_one(
+    db.private_keys.insert_one(
         {
             "username": username,
             "private_key": private_key.private_bytes(
@@ -932,25 +936,25 @@ async def shared_inbox(activity: Activity, request: Request):
     verify_http_signature(request)
 
     # Process the activity for all local users
-    local_users = await db.actors.find().to_list(None)
+    local_users = db.actors.find().to_list(None)
     for user in local_users:
         username = user["preferredUsername"]
 
         # De-duplicate activities
-        existing_activity = await db.inboxes.find_one(
+        existing_activity = db.inboxes.find_one(
             {"username": username, "id": activity.id}
         )
 
         if not existing_activity:
-            await db.inboxes.insert_one({**activity.dict(), "username": username})
-            await process_activity(activity)
+            db.inboxes.insert_one({**activity.dict(), "username": username})
+            process_activity(activity)
 
     return Response(status_code=202)
 
 
 @app.get("/actors/{username}/liked", response_model=OrderedCollection)
 async def get_liked(username: str):
-    count = await db.liked.count_documents({"username": username})
+    count = db.liked.count_documents({"username": username})
     return OrderedCollection(
         totalItems=count,
         first=f"{BASE_URL}/actors/{username}/liked?page=1",
@@ -961,12 +965,12 @@ async def get_liked(username: str):
 @app.get("/actors/{username}/liked", response_model=OrderedCollectionPage)
 async def get_liked_page(username: str, page: int = 1):
     items = (
-        await db.liked.find({"username": username})
+        db.liked.find({"username": username})
         .skip((page - 1) * 20)
         .limit(20)
         .to_list(20)
     )
-    total = await db.liked.count_documents({"username": username})
+    total = db.liked.count_documents({"username": username})
     return OrderedCollectionPage(
         id=f"{BASE_URL}/actors/{username}/liked?page={page}",
         totalItems=total,

@@ -19,4 +19,6 @@ dependencies = [
     "rdflib>=7.1.0",
     "passlib>=1.7.4",
     "pyjwt>=2.9.0",
+    "bcrypt>=4.2.0",
+    "requests>=2.32.3",
 ]
