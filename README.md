@@ -4,6 +4,8 @@ This implementation aims to be a fully compliant ActivityPub server using SHDW D
 
 https://www.w3.org/TR/activitypub/
 
+Current Status: Pre-Alpha (WIP)
+
 ## Stack:
 * FastAPI
 * MongoDB
@@ -14,9 +16,7 @@ https://www.w3.org/TR/activitypub/
 * REDIS_URL
 * SERVER_PRIVATE_KEY
 * BASE_URL
-* SECRET_KEY (for JWT)
-
-This is a work in progress...
+* HS256_SECRET_KEY or RS256_PRIVATE_KEY or RS256_PUBLIC_KEY
 
 ### TODO
 * Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model
