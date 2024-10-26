@@ -345,7 +345,6 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# New: Implement shares collection
 @app.get("/objects/{object_id}/shares", response_model=OrderedCollection)
 async def get_shares(object_id: str):
     count = db.shares.count_documents({"object": object_id})

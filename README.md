@@ -22,9 +22,6 @@ Current Status: Pre-Alpha (WIP)
 
 ### TODO
 * Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model with tests
-* Create CLI program with config file support
-* Deploy to PyPi
-* Handle serialization failure for _to_dict methods (actor and activity)
 
 ## Implementation Status
 
