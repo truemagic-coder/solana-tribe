@@ -503,7 +503,7 @@ async def post_outbox(
     # Get followers
     followers = db.followers.find_one({"username": username})
     if followers:
-        forward_to_followers(activity.model_dump(), followers.get("items", []))
+        forward_to_followers(activity)
 
     return JSONResponse(status_code=201, content={"id": activity.id})
 
@@ -818,9 +818,9 @@ def handle_reject(activity: Activity):
 
 def forward_to_followers(activity: Activity):
     actor_username = (
-        activity.actor.split("/")[-1]
-        if isinstance(activity.actor, str)
-        else activity.actor.preferredUsername
+        str(activity.actor).split("/")[-1]
+        if isinstance(activity.actor, Url)
+        else activity.actor.get("preferredUsername")
     )
     followers = db.followers.find_one({"username": actor_username})
     if followers:

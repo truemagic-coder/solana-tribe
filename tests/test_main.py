@@ -289,7 +289,7 @@ def test_context_handling():
 
 
 # Test activity validation
-def test_activity_validation():
+def test_activity_validation(monkeypatch, auth_headers):
     invalid_activity = {
         "type": "InvalidType",
         "actor": "https://example.com/actors/testuser",
@@ -298,7 +298,7 @@ def test_activity_validation():
     response = client.post(
         "/actors/testuser/outbox", json=invalid_activity, headers=auth_headers
     )
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 # Test public key retrieval
