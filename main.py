@@ -597,7 +597,7 @@ async def deliver_activity(activity: Activity):
             print(f"Failed to deliver activity to {inbox}: {e}")
 
 
-async def process_activity(activity: Activity):
+def process_activity(activity: Activity):
     if activity.type == "Create":
         handle_create(activity)
     elif activity.type == "Update":
@@ -970,7 +970,7 @@ async def shared_inbox(activity: Activity, request: Request):
             db.inboxes.insert_one(
                 {"activity": activity_to_dict(activity), "username": username}
             )
-            process_activity(activity.model_dump())
+            process_activity(activity)
 
     return Response(status_code=202)
 
