@@ -20,9 +20,6 @@ Current Status: Pre-Alpha (WIP)
 * RS256_PUBLIC_KEY
 * JWT_ALGORITHM (optional - defaults to HS256)
 
-### TODO
-* Implement SHDW drive storage and media uploading according to spec (/upload) and modify the activity base model with tests
-
 ## Implementation Status
 
 * [ ] Shared server- & client-to-server
