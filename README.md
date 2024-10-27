@@ -1,6 +1,6 @@
 # Solana Tribe
 
-This implementation aims to be a fully compliant ActivityPub server using JWTs and SHDW Drive and IPFS support.
+This implementation aims to be a fully compliant ActivityPub server using JWTs with SHDW Drive and IPFS support.
 
 https://www.w3.org/TR/activitypub/
 
